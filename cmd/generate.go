@@ -1,0 +1,82 @@
+package cmd
+
+import (
+	"os"
+
+	"gois/cli"
+
+	"github.com/spf13/cobra"
+)
+
+var generateCmd = &cobra.Command{
+	Use:   "generate [pattern]",
+	Short: "从模式生成域名并查询",
+	Long: `从模式生成域名列表并批量查询
+
+支持的模式语法:
+  - [a-z]: 小写字母 a-z
+  - [A-Z]: 大写字母 A-Z
+  - [0-9]: 数字 0-9
+  - [abc]: 自定义字符集
+  - {n}: 重复 n 次
+
+示例:
+  gois generate "[a-z]{3}.com"              # 生成所有 3 字符小写字母域名
+  gois generate "test[0-9]{2}.net"          # test + 两位数字
+  gois generate "[abc]{2}.org"              # abc 的 2 字符组合
+  gois generate "[a-z]{2}[0-9].com" -c 10   # 并发 10
+  gois generate "[0-9]{4}.io" -m simple -o results.csv`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		pattern := args[0]
+
+		// 生成域名列表
+		logger.Info("正在从模式生成域名", "pattern", pattern)
+		domains, err := cli.GenerateDomainsFromPattern(pattern)
+		if err != nil {
+			logger.Error("生成域名失败", "error", err)
+			os.Exit(1)
+		}
+
+		logger.Info("域名生成完成", "count", len(domains))
+
+		// 大数量警告
+		if len(domains) > 10000 {
+			logger.Warn("将查询大量域名，可能需要很长时间",
+				"count", len(domains),
+				"suggestion", "使用更小的字符集或减少重复次数")
+		} else if len(domains) > 1000 {
+			logger.Info("将查询较多域名，建议使用较高的并发数",
+				"count", len(domains),
+				"suggestion", "使用 -c 参数增加并发数")
+		}
+
+		// 创建 CLI 实例
+		cliInstance, err := createCLI()
+		if err != nil {
+			logger.Error("初始化失败", "error", err)
+			os.Exit(1)
+		}
+		defer cliInstance.Close()
+
+		// 批量查询
+		results := cliInstance.QueryBatchDomains(domains)
+
+		// 检查是否有失败的查询
+		hasFailures := false
+		for _, result := range results {
+			if !result.Success {
+				hasFailures = true
+				break
+			}
+		}
+
+		if hasFailures {
+			os.Exit(1)
+		}
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(generateCmd)
+}
