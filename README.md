@@ -409,9 +409,9 @@ func main() {
     
     // 分析结果
     analyzer := whois.NewAnalyzer()
-    available := analyzer.IsDomainAvailable(result)
+    status := analyzer.GetDomainStatus(result)
     
-    fmt.Printf("域名可用: %v\n", available)
+    fmt.Printf("域名状态: %s\n", status) // available, registered, unknown
     fmt.Printf("注册商: %s\n", analyzer.ExtractRegistrar(result))
 }
 ```
@@ -430,7 +430,7 @@ func main() {
 
 ## 🙏 致谢
 
-本项目的 WHOIS 查询功能参考了 Python 项目 [whois](https://github.com/yourusername/whois) 的实现。
+本项目的 WHOIS 查询功能参考了 Python 项目 [Pois](https://github.com/mirhmousavi/Pois) 的实现。
 
 感谢所有开源贡献者！
 

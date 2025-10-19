@@ -7,7 +7,7 @@ import (
 
 // DomainInfo 域名信息
 type DomainInfo struct {
-	Available      bool     `json:"available"`
+	Status         string   `json:"status"` // available, registered, unknown
 	Registrar      string   `json:"registrar,omitempty"`
 	CreationDate   string   `json:"creation_date,omitempty"`
 	ExpirationDate string   `json:"expiration_date,omitempty"`
@@ -62,17 +62,17 @@ func NewAnalyzer() *Analyzer {
 	}
 }
 
-// IsDomainAvailable 判断域名是否可用（未注册）
-func (a *Analyzer) IsDomainAvailable(result *QueryResult) bool {
+// GetDomainStatus 获取域名状态：available（可用）、registered（已注册）、unknown（未知）
+func (a *Analyzer) GetDomainStatus(result *QueryResult) string {
 	if result == nil {
-		return false
+		return "unknown"
 	}
 
 	// 合并两个结果
 	combined := strings.ToLower(result.RegistryResult + "\n" + result.RegistrarResult)
 
 	if strings.TrimSpace(combined) == "" {
-		return false
+		return "unknown"
 	}
 
 	// 检查可用关键词
@@ -93,21 +93,21 @@ func (a *Analyzer) IsDomainAvailable(result *QueryResult) bool {
 
 	// 如果有明确的可用标记，优先判断为可用
 	if availableScore > 0 && registeredScore == 0 {
-		return true
+		return "available"
 	}
 
 	// 如果有明确的已注册标记
 	if registeredScore > 0 {
-		return false
+		return "registered"
 	}
 
 	// 如果两者都有，以已注册为准（保守判断）
-	if availableScore > 0 && registeredScore > 0 {
-		return false
+	if availableScore > 0 {
+		return "registered"
 	}
 
-	// 默认判断为已注册（保守判断）
-	return false
+	// 关键词均不存在，返回未知
+	return "unknown"
 }
 
 // ExtractRegistrar 提取注册商信息
@@ -224,7 +224,7 @@ func (a *Analyzer) ExtractNameServers(result *QueryResult) []string {
 // GetDomainInfo 提取域名的完整信息
 func (a *Analyzer) GetDomainInfo(result *QueryResult) *DomainInfo {
 	return &DomainInfo{
-		Available:      a.IsDomainAvailable(result),
+		Status:         a.GetDomainStatus(result),
 		Registrar:      a.ExtractRegistrar(result),
 		CreationDate:   a.ExtractCreationDate(result),
 		ExpirationDate: a.ExtractExpirationDate(result),

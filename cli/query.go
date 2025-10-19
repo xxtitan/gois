@@ -191,10 +191,17 @@ func (c *CLI) QueryBatchDomains(domains []string) []*QueryResult {
 // printResult 打印查询结果
 func (c *CLI) printResult(domain string, result *whois.QueryResult) {
 	if c.config.Mode == "simple" {
-		available := c.analyzer.IsDomainAvailable(result)
-		status := "已注册"
-		if available {
+		statusCode := c.analyzer.GetDomainStatus(result)
+		var status string
+		switch statusCode {
+		case "available":
 			status = "可用"
+		case "registered":
+			status = "已注册"
+		case "unknown":
+			status = "未知"
+		default:
+			status = "未知"
 		}
 		c.logger.Info("查询结果", "domain", domain, "status", status)
 	} else {
@@ -228,11 +235,7 @@ func (c *CLI) writeResult(domain string, result *whois.QueryResult, err error) {
 	if c.config.Mode == "simple" {
 		status := "unknown"
 		if err == nil && result != nil {
-			if c.analyzer.IsDomainAvailable(result) {
-				status = "available"
-			} else {
-				status = "registered"
-			}
+			status = c.analyzer.GetDomainStatus(result)
 		}
 		fmt.Fprintf(c.outFile, "%s,%s\n", domain, status)
 	} else {
@@ -268,18 +271,25 @@ func (c *CLI) writeResult(domain string, result *whois.QueryResult, err error) {
 func (c *CLI) printStatistics(results []*QueryResult) {
 	successCount := 0
 	availableCount := 0
+	registeredCount := 0
+	unknownCount := 0
 
 	for _, result := range results {
 		if result.Success {
 			successCount++
-			if c.analyzer.IsDomainAvailable(result.Result) {
+			status := c.analyzer.GetDomainStatus(result.Result)
+			switch status {
+			case "available":
 				availableCount++
+			case "registered":
+				registeredCount++
+			case "unknown":
+				unknownCount++
 			}
 		}
 	}
 
 	failCount := len(results) - successCount
-	registeredCount := successCount - availableCount
 
 	attrs := []any{
 		"total", len(results),
@@ -288,7 +298,7 @@ func (c *CLI) printStatistics(results []*QueryResult) {
 	}
 
 	if c.config.Mode == "simple" {
-		attrs = append(attrs, "available", availableCount, "registered", registeredCount)
+		attrs = append(attrs, "available", availableCount, "registered", registeredCount, "unknown", unknownCount)
 	}
 
 	c.logger.Info("批量查询完成", attrs...)
