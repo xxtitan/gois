@@ -31,6 +31,22 @@ type QueryResult struct {
 	Error   error
 }
 
+// BatchSummary 批量查询统计信息
+type BatchSummary struct {
+	Requested  int64
+	Processed  int64
+	Success    int64
+	Failed     int64
+	Available  int64
+	Registered int64
+	Unknown    int64
+}
+
+// HasFailures 是否存在失败
+func (b *BatchSummary) HasFailures() bool {
+	return b != nil && b.Failed > 0
+}
+
 // CLI 命令行查询工具
 type CLI struct {
 	config   *QueryConfig
@@ -141,57 +157,113 @@ func (c *CLI) QuerySingleDomain(domain string) *QueryResult {
 	}
 }
 
-// QueryBatchDomains 批量查询域名
-func (c *CLI) QueryBatchDomains(domains []string) []*QueryResult {
+// QueryBatchDomains 批量查询域名（使用内存中的域名列表）
+func (c *CLI) QueryBatchDomains(domains []string) *BatchSummary {
 	c.logger.Info("开始批量查询",
 		"total_domains", len(domains),
 		"concurrency", c.config.Concurrency)
 
-	results := make([]*QueryResult, 0, len(domains))
-	// 使用较小的固定缓冲区，避免预分配大量内存
-	// 缓冲区大小为并发数的2倍，足以避免goroutine阻塞
-	bufferSize := c.config.Concurrency * 2
-	if bufferSize > 100 {
-		bufferSize = 100 // 限制最大缓冲区大小
-	}
-	resultChan := make(chan *QueryResult, bufferSize)
-	semaphore := make(chan struct{}, c.config.Concurrency)
-
-	var wg sync.WaitGroup
-
-	// 启动查询任务
-	for _, domain := range domains {
-		wg.Add(1)
-		go func(d string) {
-			defer wg.Done()
-
-			// 获取信号量
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			result := c.QuerySingleDomain(d)
-			resultChan <- result
-		}(domain)
-	}
-
-	// 等待所有任务完成
+	domainChan := make(chan string, c.channelBufferSize())
 	go func() {
-		wg.Wait()
+		for _, domain := range domains {
+			domainChan <- domain
+		}
+		close(domainChan)
+	}()
+
+	return c.QueryBatchDomainsStream(domainChan, int64(len(domains)))
+}
+
+// QueryBatchDomainsStream 批量查询域名（使用流式域名来源）
+func (c *CLI) QueryBatchDomainsStream(domains <-chan string, totalHint int64) *BatchSummary {
+	workerCount := c.config.Concurrency
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	resultChan := make(chan *QueryResult, workerCount*2)
+	var workerWG sync.WaitGroup
+
+	// 启动工作协程
+	for i := 0; i < workerCount; i++ {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			for domain := range domains {
+				resultChan <- c.QuerySingleDomain(domain)
+			}
+		}()
+	}
+
+	// 关闭结果通道
+	go func() {
+		workerWG.Wait()
 		close(resultChan)
 	}()
 
-	// 收集结果
-	completed := 0
-	for result := range resultChan {
-		results = append(results, result)
-		completed++
-		c.logger.Info("查询进度", "completed", completed, "total", len(domains))
+	summary := &BatchSummary{Requested: totalHint}
+	progressInterval := int64(100)
+	if totalHint > 0 {
+		// 根据总量调节进度日志频率，防止刷屏
+		switch {
+		case totalHint >= 1_000_000:
+			progressInterval = 10_000
+		case totalHint >= 100_000:
+			progressInterval = 1_000
+		case totalHint >= 10_000:
+			progressInterval = 500
+		}
 	}
 
-	// 输出统计信息
-	c.printStatistics(results)
+	for result := range resultChan {
+		summary.Processed++
+		if result.Success {
+			summary.Success++
+			if c.config.Mode == "simple" && result.Result != nil {
+				status := c.analyzer.GetDomainStatus(result.Result)
+				switch status {
+				case "available":
+					summary.Available++
+				case "registered":
+					summary.Registered++
+				case "unknown":
+					summary.Unknown++
+				}
+			}
+		} else {
+			summary.Failed++
+		}
 
-	return results
+		// 释放结果占用的内存
+		result.Result = nil
+
+		if progressInterval <= 1 || summary.Processed%progressInterval == 0 {
+			attrs := []any{"completed", summary.Processed}
+			if totalHint > 0 {
+				attrs = append(attrs, "total", totalHint)
+			}
+			c.logger.Info("查询进度", attrs...)
+		}
+	}
+
+	if summary.Requested < 0 {
+		summary.Requested = summary.Processed
+	}
+
+	c.printStatistics(summary)
+
+	return summary
+}
+
+func (c *CLI) channelBufferSize() int {
+	bufferSize := c.config.Concurrency * 2
+	if bufferSize < 1 {
+		bufferSize = 1
+	}
+	if bufferSize > 100 {
+		bufferSize = 100
+	}
+	return bufferSize
 }
 
 // printResult 打印查询结果
@@ -274,37 +346,24 @@ func (c *CLI) writeResult(domain string, result *whois.QueryResult, err error) {
 }
 
 // printStatistics 打印统计信息
-func (c *CLI) printStatistics(results []*QueryResult) {
-	successCount := 0
-	availableCount := 0
-	registeredCount := 0
-	unknownCount := 0
-
-	for _, result := range results {
-		if result.Success {
-			successCount++
-			status := c.analyzer.GetDomainStatus(result.Result)
-			switch status {
-			case "available":
-				availableCount++
-			case "registered":
-				registeredCount++
-			case "unknown":
-				unknownCount++
-			}
-		}
+func (c *CLI) printStatistics(summary *BatchSummary) {
+	if summary == nil {
+		return
 	}
 
-	failCount := len(results) - successCount
-
 	attrs := []any{
-		"total", len(results),
-		"success", successCount,
-		"failed", failCount,
+		"requested", summary.Requested,
+		"processed", summary.Processed,
+		"success", summary.Success,
+		"failed", summary.Failed,
 	}
 
 	if c.config.Mode == "simple" {
-		attrs = append(attrs, "available", availableCount, "registered", registeredCount, "unknown", unknownCount)
+		attrs = append(attrs,
+			"available", summary.Available,
+			"registered", summary.Registered,
+			"unknown", summary.Unknown,
+		)
 	}
 
 	c.logger.Info("批量查询完成", attrs...)

@@ -32,8 +32,8 @@ type Client struct {
 	proxy    *url.URL
 	registry *TLDRegistry
 	// 预编译的正则表达式，避免重复编译
-	ianaWhoisRegexp     *regexp.Regexp
-	registrarRegexps   []*regexp.Regexp
+	ianaWhoisRegexp  *regexp.Regexp
+	registrarRegexps []*regexp.Regexp
 }
 
 // NewClient 创建一个新的 WHOIS 客户端

@@ -50,18 +50,9 @@ var batchCmd = &cobra.Command{
 		defer cliInstance.Close()
 
 		// 批量查询
-		results := cliInstance.QueryBatchDomains(domains)
+		summary := cliInstance.QueryBatchDomains(domains)
 
-		// 检查是否有失败的查询
-		hasFailures := false
-		for _, result := range results {
-			if !result.Success {
-				hasFailures = true
-				break
-			}
-		}
-
-		if hasFailures {
+		if summary.HasFailures() {
 			os.Exit(1)
 		}
 	},

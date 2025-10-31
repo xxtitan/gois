@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"math"
 	"os"
 
 	"gois/cli"
@@ -30,24 +31,25 @@ var generateCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		pattern := args[0]
 
-		// 生成域名列表
+		// 生成域名流
 		logger.Info("正在从模式生成域名", "pattern", pattern)
-		domains, err := cli.GenerateDomainsFromPattern(pattern)
+		domainStream, totalCount, err := cli.GenerateDomainsFromPattern(pattern)
 		if err != nil {
 			logger.Error("生成域名失败", "error", err)
 			os.Exit(1)
 		}
 
-		logger.Info("域名生成完成", "count", len(domains))
+		logger.Info("域名生成完成", "count", totalCount)
 
 		// 大数量警告
-		if len(domains) > 10000 {
+		switch {
+		case totalCount > 10_000:
 			logger.Warn("将查询大量域名，可能需要很长时间",
-				"count", len(domains),
+				"count", totalCount,
 				"suggestion", "使用更小的字符集或减少重复次数")
-		} else if len(domains) > 1000 {
+		case totalCount > 1_000:
 			logger.Info("将查询较多域名，建议使用较高的并发数",
-				"count", len(domains),
+				"count", totalCount,
 				"suggestion", "使用 -c 参数增加并发数")
 		}
 
@@ -60,18 +62,13 @@ var generateCmd = &cobra.Command{
 		defer cliInstance.Close()
 
 		// 批量查询
-		results := cliInstance.QueryBatchDomains(domains)
-
-		// 检查是否有失败的查询
-		hasFailures := false
-		for _, result := range results {
-			if !result.Success {
-				hasFailures = true
-				break
-			}
+		totalHint := int64(-1)
+		if totalCount <= uint64(math.MaxInt64) {
+			totalHint = int64(totalCount)
 		}
+		summary := cliInstance.QueryBatchDomainsStream(domainStream, totalHint)
 
-		if hasFailures {
+		if summary.HasFailures() {
 			os.Exit(1)
 		}
 	},
