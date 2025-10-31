@@ -148,7 +148,13 @@ func (c *CLI) QueryBatchDomains(domains []string) []*QueryResult {
 		"concurrency", c.config.Concurrency)
 
 	results := make([]*QueryResult, 0, len(domains))
-	resultChan := make(chan *QueryResult, len(domains))
+	// 使用较小的固定缓冲区，避免预分配大量内存
+	// 缓冲区大小为并发数的2倍，足以避免goroutine阻塞
+	bufferSize := c.config.Concurrency * 2
+	if bufferSize > 100 {
+		bufferSize = 100 // 限制最大缓冲区大小
+	}
+	resultChan := make(chan *QueryResult, bufferSize)
 	semaphore := make(chan struct{}, c.config.Concurrency)
 
 	var wg sync.WaitGroup

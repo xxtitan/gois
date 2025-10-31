@@ -31,6 +31,9 @@ type Client struct {
 	timeout  time.Duration
 	proxy    *url.URL
 	registry *TLDRegistry
+	// 预编译的正则表达式，避免重复编译
+	ianaWhoisRegexp     *regexp.Regexp
+	registrarRegexps   []*regexp.Regexp
 }
 
 // NewClient 创建一个新的 WHOIS 客户端
@@ -40,10 +43,22 @@ func NewClient(timeout time.Duration, proxyURL *url.URL) (*Client, error) {
 		return nil, err
 	}
 
+	// 预编译正则表达式
+	registrarPatterns := []string{
+		`(?mi)^.*whois server.*$`,
+		`(?mi)^.*registrar whois.*$`,
+	}
+	registrarRegexps := make([]*regexp.Regexp, 0, len(registrarPatterns))
+	for _, pattern := range registrarPatterns {
+		registrarRegexps = append(registrarRegexps, regexp.MustCompile(pattern))
+	}
+
 	return &Client{
-		timeout:  timeout,
-		proxy:    proxyURL,
-		registry: registry,
+		timeout:          timeout,
+		proxy:            proxyURL,
+		registry:         registry,
+		ianaWhoisRegexp:  regexp.MustCompile(`(?mi)^.*whois:.*$`),
+		registrarRegexps: registrarRegexps,
 	}, nil
 }
 
@@ -132,8 +147,7 @@ func (c *Client) fetchWhoisServerFromIANA(tld string) (string, error) {
 	}
 
 	// 提取 WHOIS 服务器
-	re := regexp.MustCompile(`(?mi)^.*whois:.*$`)
-	matches := re.FindStringSubmatch(result)
+	matches := c.ianaWhoisRegexp.FindStringSubmatch(result)
 	if len(matches) == 0 {
 		return "", &NoWhoisServerFoundError{TLD: tld}
 	}
@@ -153,13 +167,7 @@ func (c *Client) fetchWhoisServerFromIANA(tld string) (string, error) {
 
 // extractRegistrarServer 从注册局响应中提取注册商 WHOIS 服务器
 func (c *Client) extractRegistrarServer(response string) string {
-	patterns := []string{
-		`(?mi)^.*whois server.*$`,
-		`(?mi)^.*registrar whois.*$`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range c.registrarRegexps {
 		matches := re.FindStringSubmatch(response)
 		if len(matches) > 0 {
 			parts := strings.Split(matches[0], ":")
@@ -211,7 +219,9 @@ func (c *Client) query(domain, server string) (string, error) {
 	// 读取响应
 	var result strings.Builder
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 4096), 1024*1024) // 1MB buffer
+	// 使用较小的初始缓冲区和最大缓冲区，避免高并发时占用过多内存
+	// 大多数WHOIS响应不会超过256KB
+	scanner.Buffer(make([]byte, 4096), 256*1024) // 256KB max buffer
 
 	for scanner.Scan() {
 		result.WriteString(scanner.Text())
@@ -229,12 +239,23 @@ func (c *Client) query(domain, server string) (string, error) {
 // readWithEncoding 使用不同的编码读取响应
 func (c *Client) readWithEncoding(conn net.Conn) (string, error) {
 	// 重新读取所有数据
+	// 限制最大读取大小，避免内存无限增长
+	const maxReadSize = 512 * 1024 // 512KB最大限制
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
 
 	for {
 		n, err := conn.Read(tmp)
 		if n > 0 {
+			// 检查是否超过最大大小限制
+			if len(buf)+n > maxReadSize {
+				// 只读取到最大限制
+				remaining := maxReadSize - len(buf)
+				if remaining > 0 {
+					buf = append(buf, tmp[:remaining]...)
+				}
+				break
+			}
 			buf = append(buf, tmp[:n]...)
 		}
 		if err != nil {

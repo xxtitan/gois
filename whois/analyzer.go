@@ -18,10 +18,46 @@ type DomainInfo struct {
 type Analyzer struct {
 	availableKeywords  []string
 	registeredKeywords []string
+	// 预编译的正则表达式，避免重复编译
+	registrarRegexps      []*regexp.Regexp
+	creationDateRegexps   []*regexp.Regexp
+	expirationDateRegexps []*regexp.Regexp
+	nameServerRegexps     []*regexp.Regexp
 }
 
 // NewAnalyzer 创建一个新的分析器
 func NewAnalyzer() *Analyzer {
+	// 预编译所有正则表达式
+	registrarPatterns := []string{
+		`(?mi)registrar:\s*(.+)`,
+		`(?mi)sponsoring registrar:\s*(.+)`,
+	}
+	creationDatePatterns := []string{
+		`(?mi)creation date:\s*(.+)`,
+		`(?mi)created:\s*(.+)`,
+		`(?mi)registered on:\s*(.+)`,
+	}
+	expirationDatePatterns := []string{
+		`(?mi)registry expiry date:\s*(.+)`,
+		`(?mi)registrar registration expiration date:\s*(.+)`,
+		`(?mi)expiration date:\s*(.+)`,
+		`(?mi)expires:\s*(.+)`,
+		`(?mi)expiry date:\s*(.+)`,
+	}
+	nameServerPatterns := []string{
+		`(?mi)name server:\s*(.+)`,
+		`(?mi)nameserver:\s*(.+)`,
+		`(?mi)nserver:\s*(.+)`,
+	}
+
+	compileRegexps := func(patterns []string) []*regexp.Regexp {
+		regexps := make([]*regexp.Regexp, 0, len(patterns))
+		for _, pattern := range patterns {
+			regexps = append(regexps, regexp.MustCompile(pattern))
+		}
+		return regexps
+	}
+
 	return &Analyzer{
 		availableKeywords: []string{
 			"no match",
@@ -59,6 +95,10 @@ func NewAnalyzer() *Analyzer {
 			"创建时间",
 			"到期时间",
 		},
+		registrarRegexps:      compileRegexps(registrarPatterns),
+		creationDateRegexps:   compileRegexps(creationDatePatterns),
+		expirationDateRegexps: compileRegexps(expirationDatePatterns),
+		nameServerRegexps:     compileRegexps(nameServerPatterns),
 	}
 }
 
@@ -118,13 +158,7 @@ func (a *Analyzer) ExtractRegistrar(result *QueryResult) string {
 
 	combined := result.RegistrarResult + "\n" + result.RegistryResult
 
-	patterns := []string{
-		`(?mi)registrar:\s*(.+)`,
-		`(?mi)sponsoring registrar:\s*(.+)`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range a.registrarRegexps {
 		matches := re.FindStringSubmatch(combined)
 		if len(matches) > 1 {
 			return strings.TrimSpace(matches[1])
@@ -142,14 +176,7 @@ func (a *Analyzer) ExtractCreationDate(result *QueryResult) string {
 
 	combined := result.RegistrarResult + "\n" + result.RegistryResult
 
-	patterns := []string{
-		`(?mi)creation date:\s*(.+)`,
-		`(?mi)created:\s*(.+)`,
-		`(?mi)registered on:\s*(.+)`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range a.creationDateRegexps {
 		matches := re.FindStringSubmatch(combined)
 		if len(matches) > 1 {
 			return strings.TrimSpace(matches[1])
@@ -167,16 +194,7 @@ func (a *Analyzer) ExtractExpirationDate(result *QueryResult) string {
 
 	combined := result.RegistrarResult + "\n" + result.RegistryResult
 
-	patterns := []string{
-		`(?mi)registry expiry date:\s*(.+)`,
-		`(?mi)registrar registration expiration date:\s*(.+)`,
-		`(?mi)expiration date:\s*(.+)`,
-		`(?mi)expires:\s*(.+)`,
-		`(?mi)expiry date:\s*(.+)`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range a.expirationDateRegexps {
 		matches := re.FindStringSubmatch(combined)
 		if len(matches) > 1 {
 			return strings.TrimSpace(matches[1])
@@ -194,17 +212,10 @@ func (a *Analyzer) ExtractNameServers(result *QueryResult) []string {
 
 	combined := result.RegistrarResult + "\n" + result.RegistryResult
 
-	patterns := []string{
-		`(?mi)name server:\s*(.+)`,
-		`(?mi)nameserver:\s*(.+)`,
-		`(?mi)nserver:\s*(.+)`,
-	}
-
 	var nameServers []string
 	seen := make(map[string]bool)
 
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range a.nameServerRegexps {
 		matches := re.FindAllStringSubmatch(combined, -1)
 		for _, match := range matches {
 			if len(match) > 1 {
